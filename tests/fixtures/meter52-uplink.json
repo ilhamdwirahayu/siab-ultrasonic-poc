@@ -1,0 +1,16 @@
+{
+  "type": "uplink",
+  "port": 8,
+  "data": "681052162626000000811e921f672c000000002c000000003500000000203100185116081126204002e116",
+  "counter": 0,
+  "devEui": "8cf95720001cd395",
+  "radio": {
+    "gps_time": "2026-11-08T09:54:10.433Z",
+    "hardware": { "snr": 12.25, "rssi": -73 },
+    "datarate": 2,
+    "modulation": { "bandwidth": 125000, "spreading": 10 },
+    "delay": 0,
+    "freq": 922,
+    "size": 43
+  }
+}
