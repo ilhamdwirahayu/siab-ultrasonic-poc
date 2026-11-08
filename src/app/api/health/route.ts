@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
-import { normalizeAntaresLatest } from "@/lib/antares/normalizer";
+import { AntaresParsingError, normalizeAntaresLatest } from "@/lib/antares/normalizer";
 import { DEVICES } from "@/config/devices";
 import { getSupabaseServerClient } from "@/lib/db/supabase";
 import { isRateLimited, rateLimitedResponse } from "@/lib/rate-limit";
-import { fetchLatestAntaresResponse, isAntaresConfigured } from "@/lib/antares/http";
+import {
+  fetchLatestAntaresResponse,
+  AntaresHttpError,
+  getAntaresDiagnostic,
+  isAntaresConfigured,
+} from "@/lib/antares/http";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +22,14 @@ export async function GET(request: Request) {
   }
 
   let antares: "reachable" | "not-configured" | "error" = isAntaresConfigured() ? "error" : "not-configured";
+  let antaresDiagnostic = getAntaresDiagnostic(
+    "26261652",
+    isAntaresConfigured() ? null : new AntaresHttpError(
+      "ANTARES_ACCESS_KEY is missing.",
+      "missing-credentials",
+      null,
+    ),
+  );
   if (isAntaresConfigured()) {
     antares = "error";
     try {
@@ -24,10 +37,15 @@ export async function GET(request: Request) {
       if (!serial) throw new Error("Configured probe device is missing.");
       normalizeAntaresLatest(await fetchLatestAntaresResponse(serial));
       antares = "reachable";
+      antaresDiagnostic = getAntaresDiagnostic(serial, null);
     } catch (error) {
+      antaresDiagnostic = getAntaresDiagnostic("26261652", error);
+      if (error instanceof AntaresParsingError) {
+        antaresDiagnostic = { ...antaresDiagnostic, failureType: "invalid-response-payload" };
+      }
       console.error("ANTARES health probe failed", {
         serial: "26261652",
-        message: error instanceof Error ? error.message : "Unknown ANTARES health error.",
+        diagnostic: antaresDiagnostic,
       });
       antares = "error";
     }
@@ -38,6 +56,7 @@ export async function GET(request: Request) {
     mode: process.env.DEMO_MODE === "false" ? "real" : "demo",
     database,
     antares,
+    diagnostics: { antares: antaresDiagnostic },
     checkedAt: new Date().toISOString(),
   }, { headers: { "Cache-Control": "no-store" } });
 }

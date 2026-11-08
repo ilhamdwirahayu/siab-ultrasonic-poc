@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildLatestUrl, fetchAntaresJson, getLatestUrl } from "../src/lib/antares/http";
+import {
+  buildLatestUrl,
+  fetchAntaresJson,
+  getAntaresDiagnostic,
+  getLatestUrl,
+} from "../src/lib/antares/http";
 
 describe("ANTARES latest endpoint", () => {
   afterEach(() => {
@@ -23,6 +28,7 @@ describe("ANTARES latest endpoint", () => {
     const [url, options] = request.mock.calls[0];
     expect(url).toBe("https://platform.antares.id:8443/~/antares-cse/antares-id/SIAB-US-01/26261652/la");
     expect(new Headers(options?.headers).get("X-M2M-Origin")).toBe("test-access-key");
+    expect(new Headers(options?.headers).get("Content-Type")).toBe("application/json");
     expect(new Headers(options?.headers).get("Accept")).toBe("application/json");
     expect(rawResponse).toEqual({ "m2m:cin": { con: "{}" } });
   });
@@ -43,5 +49,34 @@ describe("ANTARES latest endpoint", () => {
     });
     expect(JSON.stringify(log.mock.calls)).not.toContain(key);
     log.mockRestore();
+  });
+
+  it("classifies a 404 and reports the exact safe endpoint configuration", async () => {
+    vi.stubEnv("ANTARES_API_BASE_URL", "https://platform.antares.id:8443");
+    vi.stubEnv("ANTARES_APPLICATION", "SIAB-US-01");
+    vi.stubEnv("ANTARES_ACCESS_KEY", "do-not-show");
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ message: "Resource not found" }), { status: 404 }),
+    );
+    let caught: unknown;
+    try {
+      await fetchAntaresJson(getLatestUrl("26261652"), "do-not-show", "latest", request);
+    } catch (error) {
+      caught = error;
+    }
+
+    const diagnostic = getAntaresDiagnostic("26261652", caught);
+    expect(diagnostic).toMatchObject({
+      method: "GET",
+      origin: "https://platform.antares.id:8443",
+      path: "/~/antares-cse/antares-id/SIAB-US-01/26261652/la",
+      applicationMatchesExpected: true,
+      baseUrlMatchesExpected: true,
+      accessKeyConfigured: true,
+      httpStatus: 404,
+      failureType: "resource-not-found",
+      likelyCause: "resource-path-device-or-key-scope",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("do-not-show");
   });
 });
