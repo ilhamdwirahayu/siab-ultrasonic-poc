@@ -51,6 +51,20 @@ describe("ANTARES latest endpoint", () => {
     log.mockRestore();
   });
 
+  it("retries a transient upstream error and then succeeds", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ "m2m:cin": { con: "{}" } }), { status: 200 }));
+
+    const result = fetchAntaresJson("https://example.test/la", "test-access-key", "latest", request);
+    await vi.advanceTimersByTimeAsync(250);
+
+    await expect(result).resolves.toEqual({ "m2m:cin": { con: "{}" } });
+    expect(request).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it("classifies a 404 and reports the exact safe endpoint configuration", async () => {
     vi.stubEnv("ANTARES_API_BASE_URL", "https://platform.antares.id:8443");
     vi.stubEnv("ANTARES_APPLICATION", "SIAB-US-01");

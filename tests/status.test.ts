@@ -19,4 +19,13 @@ describe("device freshness status", () => {
     const reading = getDemoReadings()[0];
     expect(getReadingStatus(reading, Date.parse(reading.receivedAt) - 1)).toBe("stale");
   });
+
+  it("uses an eight-hour default freshness threshold", () => {
+    vi.stubEnv("ANTARES_FRESHNESS_MINUTES", "");
+    const reading = getDemoReadings()[0];
+    const receivedAt = Date.parse(reading.receivedAt);
+
+    expect(getReadingStatus(reading, receivedAt + 8 * 60 * 60_000 - 1)).toBe("fresh");
+    expect(getReadingStatus(reading, receivedAt + 8 * 60 * 60_000 + 1)).toBe("stale");
+  });
 });

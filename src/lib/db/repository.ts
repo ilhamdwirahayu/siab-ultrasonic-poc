@@ -20,17 +20,32 @@ export async function listDevices(): Promise<DeviceWithLatest[]> {
   }));
 }
 
-export async function listReadings(serial?: string, limit = 100): Promise<Reading[]> {
+export async function listReadings(serial?: string, limit = 100, since?: string): Promise<Reading[]> {
   const supabase = getSupabaseServerClient();
   if (process.env.DEMO_MODE !== "false") {
-    return getDemoReadings().filter((reading) => !serial || reading.serial === serial).slice(0, limit);
+    return getDemoReadings()
+      .filter((reading) => (!serial || reading.serial === serial) && (!since || Date.parse(reading.receivedAt) >= Date.parse(since)))
+      .sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))
+      .slice(0, limit);
   }
   if (!supabase) throw new Error("Supabase server credentials are not configured.");
-  let query = supabase.from("telemetry_readings").select("*").order("received_at", { ascending: false }).limit(limit);
-  if (serial) query = query.eq("serial", serial);
-  const { data, error } = await query;
-  if (error) throw new Error(`Database query failed: ${error.message}`);
-  return (data ?? []).map(mapReading);
+  const maximumReadings = Math.min(Math.max(0, limit), 10_000);
+  const pageSize = 1_000;
+  const readings: Reading[] = [];
+
+  for (let offset = 0; offset < maximumReadings; offset += pageSize) {
+    let query = supabase.from("telemetry_readings").select("*")
+      .order("received_at", { ascending: false })
+      .range(offset, Math.min(offset + pageSize, maximumReadings) - 1);
+    if (serial) query = query.eq("serial", serial);
+    if (since) query = query.gte("received_at", since);
+    const { data, error } = await query;
+    if (error) throw new Error(`Database query failed: ${error.message}`);
+    const page = data ?? [];
+    readings.push(...page.map(mapReading));
+    if (page.length < pageSize) break;
+  }
+  return readings;
 }
 
 export async function getSummary(): Promise<Summary> {

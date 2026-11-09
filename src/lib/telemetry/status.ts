@@ -1,6 +1,6 @@
 import type { Reading } from "@/types/telemetry";
 
-const defaultFreshnessMinutes = 60;
+const defaultFreshnessMinutes = 8 * 60;
 
 export function getFreshnessMinutes(): number {
   const configured = process.env.ANTARES_FRESHNESS_MINUTES;

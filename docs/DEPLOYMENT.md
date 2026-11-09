@@ -25,17 +25,17 @@ Belum ada login cloud atau deployment yang dilakukan. Semua langkah cloud di baw
    ```
 
 3. Buka Vercel → **Add New → Project** → import repository private.
-4. Project Settings → **Environment Variables**: isi `ANTARES_API_BASE_URL`, `ANTARES_APPLICATION`, `ANTARES_ACCESS_KEY`, `ANTARES_FRESHNESS_MINUTES`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `DEMO_MODE`, dan `INTERNAL_SYNC_TOKEN`.
+4. Project Settings → **Environment Variables**: isi `ANTARES_API_BASE_URL`, `ANTARES_APPLICATION`, `ANTARES_ACCESS_KEY`, `ANTARES_FRESHNESS_MINUTES=480`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `DEMO_MODE`, `INTERNAL_SYNC_TOKEN`, dan `CRON_SECRET` (acak, minimal 16 karakter, tanpa whitespace di tepi). Hanya URL Supabase yang memakai prefix `NEXT_PUBLIC_`; jangan menambahkan prefix ini pada secrets. Perbarui nilai freshness lama 60 menit menjadi 480 menit di Production jika interval laporan belum dikonfirmasi; `STALE` bukan bukti perangkat offline.
 5. Gunakan `DEMO_MODE=true` untuk demo fixture. Untuk real, jalankan migration dan verifikasi server outbound ke HTTPS port 8443 serta Supabase terlebih dahulu, baru ubah ke `false`.
 6. Deploy. Vercel akan menyediakan URL `https://<project>.vercel.app`.
 7. Tes dari ponsel pada jaringan seluler: dashboard, detail, report, `/api/health`. Matikan laptop dan pastikan data tersimpan tetap bisa dibaca.
-8. Schedule sinkronisasi dengan Vercel Cron (atau scheduler tepercaya) ke `/api/sync` menggunakan Authorization secret. Periksa batas paket Vercel dan uji akses port 8443 dari region hosting. Jangan menyatakan histori unattended berjalan sebelum cron benar-benar terkonfirmasi.
+8. Jadwal `/api/sync` dalam `vercel.json` berjalan setiap lima menit dan memerlukan paket Vercel Pro atau Enterprise; Hobby hanya mendukung satu jadwal per hari. Set `CRON_SECRET` di Environment Variables Production; Vercel Cron mengirimkannya sebagai Bearer token. Setelah deployment yang disetujui, buka **Project → Settings → Cron Jobs**, periksa function duration dan logs tanpa data rahasia. Jangan menyatakan unattended sync aktif sebelum cron sukses terkonfirmasi.
 
 ### Cek keamanan sebelum publikasi
 
 - Vercel Environment Variables hanya berisi server secrets tanpa prefix `NEXT_PUBLIC_` kecuali URL Supabase dan nama aplikasi.
 - Browser DevTools Network/Sources tidak boleh menampilkan ANTARES access key atau Supabase secret.
-- Uji `/api/sync` tanpa token (401), dalam mode demo (409), dan uji rate limit.
+- Uji `GET /api/sync` tanpa token cron (401), `POST /api/sync` tanpa token admin (401), dalam mode demo (409), dan uji rate limit.
 - Tabel `readings` tidak menyediakan policy SELECT untuk `anon`/`authenticated`.
 - Tidak ada nama pelanggan maupun koordinat rumah pada seed.
 

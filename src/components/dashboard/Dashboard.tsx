@@ -1,18 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Clock3, Gauge, RefreshCw, Waves } from "lucide-react";
-import dynamic from "next/dynamic";
+import { Activity, AlertCircle, ArrowUpRight, Clock3, Gauge, RefreshCw, Waves } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { ReadingsChart } from "@/components/charts/ReadingsChart";
+import useSWR from "swr";
+import { MonitoringCharts } from "@/components/charts/MonitoringCharts";
+import { DeviceTwin } from "@/components/digital-twin/DeviceTwin";
 import { Button } from "@/components/ui/button";
 import { formatDateTime, formatNumber } from "@/lib/format";
+import { TELEMETRY_PERIODS, type TelemetryPeriod } from "@/lib/telemetry/chart-data";
 import type { DeviceWithLatest, Reading, Summary } from "@/types/telemetry";
-
-const WaterMeterTwin = dynamic(() => import("@/components/digital-twin/WaterMeterTwin"), {
-  ssr: false,
-  loading: () => <div className="twin-stage twin-loading">Memuat visualisasi 3D…</div>,
-});
 
 interface DashboardResponse {
   mode: "demo" | "real";
@@ -27,114 +24,56 @@ interface ReadingsResponse {
   readings: Reading[];
 }
 
-interface LiveReadingResponse {
-  reading: Reading;
-  status: "fresh" | "stale";
-}
-
 export function Dashboard() {
-  const [devices, setDevices] = useState<DeviceWithLatest[]>([]);
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [readings, setReadings] = useState<Reading[]>([]);
-  const [liveReading, setLiveReading] = useState<Reading | null>(null);
-  const [liveStatus, setLiveStatus] = useState<LiveReadingResponse["status"] | null>(null);
-  const [mode, setMode] = useState<"demo" | "real" | "unknown">("unknown");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [selectedSerial, setSelectedSerial] = useState("26261652");
+  const [period, setPeriod] = useState<TelemetryPeriod>("24h");
   const [syncing, setSyncing] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const responses = await Promise.all([
-        fetch("/api/devices", { cache: "no-store" }),
-        fetch("/api/summary?range=24h", { cache: "no-store" }),
-        fetch("/api/readings?range=7d&limit=100", { cache: "no-store" }),
-      ]);
-      for (const response of responses) {
-        if (!response.ok) {
-          const responseBody = await response.json().catch(() => null) as { error?: string } | null;
-          throw new Error(responseBody?.error ?? `Backend SIAB gagal memuat data (HTTP ${response.status}).`);
-        }
-      }
-      const [deviceData, summaryData, readingsData] = await Promise.all(responses.map((response) => response.json())) as [
-        DashboardResponse, SummaryResponse, ReadingsResponse,
-      ];
-      setDevices(deviceData.devices);
-      setMode(deviceData.mode);
-      setSummary(summaryData.summary);
-      setReadings(readingsData.readings);
-      setError(null);
-      setLastRefresh(new Date().toISOString());
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Terjadi kesalahan saat memuat data.";
-      setError(message === "Failed to fetch"
-        ? "Tidak dapat menghubungi backend SIAB. Periksa koneksi aplikasi lalu coba lagi."
-        : message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [now, setNow] = useState(() => Date.now());
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const markUpdated = useCallback(() => setLastUpdated(new Date().toISOString()), []);
+  const deviceResource = useSWR<DashboardResponse>("/api/devices", fetchJson, {
+    refreshInterval: 60_000,
+    errorRetryInterval: 60_000,
+    onSuccess: markUpdated,
+  });
+  const summaryResource = useSWR<SummaryResponse>("/api/summary?range=24h", fetchJson, {
+    refreshInterval: 60_000,
+    errorRetryInterval: 60_000,
+    onSuccess: markUpdated,
+  });
+  const readingsKey = `/api/readings?serial=${selectedSerial}&range=${period}&limit=10000`;
+  const readingsResource = useSWR<ReadingsResponse>(readingsKey, fetchJson, {
+    refreshInterval: 60_000,
+    errorRetryInterval: 60_000,
+    onSuccess: markUpdated,
+  });
 
   useEffect(() => {
-    const initial = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(), 60_000);
-    return () => {
-      window.clearTimeout(initial);
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  async function syncNow() {
+  async function refreshData() {
     setSyncing(true);
     try {
-      const response = await fetch("/api/antares/latest", { cache: "no-store" });
-      const body = await response.json().catch(() => null) as LiveReadingResponse & { error?: string } | null;
-      if (!response.ok) throw new Error(body?.error ?? `ANTARES latest request failed (HTTP ${response.status}).`);
-      if (!body?.reading) throw new Error("ANTARES returned no latest uplink for meter 26261652.");
-      setLiveReading(body.reading);
-      setLiveStatus(body.status);
-      setError(null);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "ANTARES latest request failed.";
-      setError(message === "Failed to fetch"
-        ? "Tidak dapat menghubungi backend SIAB untuk membaca ANTARES. Coba lagi setelah koneksi pulih."
-        : message);
+      await Promise.allSettled([
+        deviceResource.mutate(),
+        summaryResource.mutate(),
+        readingsResource.mutate(),
+      ]);
     } finally {
       setSyncing(false);
     }
   }
 
-  async function syncHistory() {
-    if (mode !== "real") {
-      setError("Backfill memerlukan mode real dan Supabase yang sudah dikonfigurasi.");
-      return;
-    }
-    const token = window.prompt("Masukkan token admin sinkronisasi. Token hanya digunakan untuk permintaan ini.");
-    if (!token) return;
-    setSyncing(true);
-    try {
-      const response = await fetch("/api/sync?backfill=true", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const body = await response.json().catch(() => null) as { error?: string } | null;
-      if (!response.ok) throw new Error(body?.error ?? `Backfill backend gagal (HTTP ${response.status}).`);
-      await refresh();
-      setError(null);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Backfill ANTARES gagal.";
-      setError(message === "Failed to fetch"
-        ? "Tidak dapat menghubungi backend SIAB untuk backfill. Coba lagi setelah koneksi pulih."
-        : message);
-    } finally {
-      setSyncing(false);
-    }
-  }
-
+  const devices = deviceResource.data?.devices ?? [];
+  const summary = summaryResource.data?.summary ?? null;
+  const readings = readingsResource.data?.readings ?? [];
+  const mode = deviceResource.data?.mode ?? "unknown";
   const demo = mode === "demo";
-  const displayedReadings = readings.filter((reading) => reading.serial === "26261652");
-  const meter52 = devices.find((device) => device.serial === "26261652");
+  const selectedMeter = devices.find((device) => device.serial === selectedSerial) ?? null;
+  const error = deviceResource.error?.message ?? summaryResource.error?.message ?? readingsResource.error?.message ?? null;
+  const loading = !deviceResource.data && !summaryResource.data && !readingsResource.data;
 
   return (
     <main className="page-shell">
@@ -153,13 +92,10 @@ export function Dashboard() {
           <h1>Monitoring yang <em>lebih jernih.</em></h1>
           <p className="heading-subtitle">Pantau perangkat ultrasonik dan telemetri air dalam satu tampilan.</p>
         </div>
-        <Button variant="primary" onClick={() => void syncNow()} disabled={syncing || loading}>
+        <Button variant="primary" onClick={() => void refreshData()} disabled={syncing || loading}>
           <RefreshCw size={16} className={syncing ? "spin" : ""} />
-          {syncing ? "Menyinkronkan…" : "Sync Now"}
+          {syncing ? "Memuat ulang…" : "Refresh Data"}
         </Button>
-        {!demo && <Button variant="outline" onClick={() => void syncHistory()} disabled={syncing || loading}>
-          <Activity size={16} />Backfill History
-        </Button>}
       </div>
 
       {error && <div className="error-banner" role="alert"><AlertCircle size={18} />{error}</div>}
@@ -194,67 +130,89 @@ export function Dashboard() {
             </article>
           </section>
 
-          <section className="main-grid">
-            <article className="panel device-panel">
-              <div className="panel-heading">
-                <div><p className="eyebrow">INVENTARIS PERANGKAT</p><h2>Meter terdaftar</h2></div>
-                <span className="count-pill">{devices.length} device</span>
-              </div>
-              <div className="device-list">
-                {devices.map((device, index) => (
-                  <Link href={`/devices/${device.serial}`} className="device-row" key={device.serial}>
-                    <span className={`device-avatar avatar-${index}`}><Waves size={19} /></span>
-                    <span className="device-main">
-                      <strong>Meter {device.serial}</strong>
-                      <small>{device.location}</small>
-                      <small className="device-eui">DevEUI {device.devEui}</small>
-                    </span>
-                    <span className="device-right">
-                      <span className={`status-pill status-${device.status}`}>
-                        <span />{formatDeviceStatus(device.status)}
-                      </span>
-                      <small>{formatDateTime(device.lastSeen)}</small>
-                    </span>
-                    <ArrowDownRight className="device-chevron" size={16} />
-                  </Link>
-                ))}
-              </div>
-              <div className="inventory-footnote"><Clock3 size={14} />Interval uplink belum dipastikan; status online/offline tidak disimpulkan.</div>
-            </article>
+          <section className="panel digital-twin-panel">
+            <div className="panel-heading">
+              <div><p className="eyebrow">DIGITAL TWIN · JARINGAN DISTRIBUSI</p><h2>SIAB Ultrasonic 213E | DN15</h2></div>
+              <label className="twin-meter-select"><span>Meter</span><select value={selectedSerial} onChange={(event) => setSelectedSerial(event.target.value)}>
+                <option value="26261648">26261648</option>
+                <option value="26261649">26261649</option>
+                <option value="26261652">26261652</option>
+                <option value="26261654">26261654</option>
+              </select></label>
+            </div>
+            <DeviceTwin device={selectedMeter} />
+            <p className="twin-caption">Skema konseptual jaringan air. Bentuk/ukuran komponen dan jalur distribusi bukan as-built drawing atau klaim dimensi fisik terverifikasi.</p>
+          </section>
 
-            <article className="panel twin-panel">
-              <div className="panel-heading"><div><p className="eyebrow">DIGITAL TWIN</p><h2>Ultrasonic 213E</h2></div><span className="live-tag">DN15 · Q3 2.5 m³/jam</span></div>
-              <WaterMeterTwin flow={meter52?.latest?.flowM3PerHour ?? null} />
-              <p className="twin-caption">Model 3D berbasis primitive untuk ilustrasi. Tidak merepresentasikan kondisi fisik aktual.</p>
-            </article>
+          <section className="panel telemetry-panel" aria-label="Grafik time-series meter">
+            <div className="panel-heading telemetry-heading">
+              <div><p className="eyebrow">LIVE TELEMETRY · ASIA/JAKARTA</p><h2>Monitoring time-series</h2></div>
+              <div className="chart-controls">
+                <label><span>Periode</span><select value={period} onChange={(event) => setPeriod(event.target.value as TelemetryPeriod)}>
+                  {Object.keys(TELEMETRY_PERIODS).map((value) => (
+                    <option key={value} value={value}>{formatPeriod(value as TelemetryPeriod)}</option>
+                  ))}
+                </select></label>
+              </div>
+            </div>
+            {readingsResource.data ? (
+              <MonitoringCharts readings={readings} period={period} now={now} />
+            ) : (
+              <div className="chart-load-state" role="status">
+                {readingsResource.error
+                  ? "Histori belum berhasil dimuat; aktivitas uplink tidak ditampilkan sebagai nol."
+                  : "Memuat histori tersimpan…"}
+              </div>
+            )}
+          </section>
+
+          <section className="panel device-telemetry-panel">
+            <div className="panel-heading">
+              <div><p className="eyebrow">STATUS PER PERANGKAT</p><h2>Komunikasi dan pengukuran</h2></div>
+              <span className="count-pill">{devices.length} meter</span>
+            </div>
+            <div className="device-table-wrap">
+              <table className="device-telemetry-table">
+                <thead><tr><th>Perangkat</th><th>Komunikasi</th><th>Debit</th><th>Totalizer</th><th>Temperatur</th><th>Uplink terakhir</th><th>Decoder</th></tr></thead>
+                <tbody>{devices.map((device) => (
+                  <tr key={device.serial}>
+                    <td><Link href={`/devices/${device.serial}`}>Meter {device.serial}</Link><small>{device.devEui}</small></td>
+                    <td><span className={`status-pill status-${device.status}`}><span />{formatDeviceStatus(device.status)}</span></td>
+                    <td>{formatMeasured(device.latest?.flowM3PerHour, "m³/jam")}</td>
+                    <td>{formatMeasured(device.latest?.forwardM3, "m³")}</td>
+                    <td>{formatMeasured(device.latest?.temperatureC, "°C")}</td>
+                    <td>{device.lastSeen ? formatDateTime(device.lastSeen) : "—"}</td>
+                    <td>{device.latest?.decodeStatus ?? "—"}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <p className="inventory-footnote"><Clock3 size={14} />FRESH/STALE mengacu pada waktu uplink terakhir; status komunikasi tidak menyatakan kondisi aliran air.</p>
           </section>
 
           <section className="bottom-grid">
-            <article className="panel chart-panel">
-              <div className="panel-heading"><div><p className="eyebrow">HISTORI TELEMETRI</p><h2>Meter 26261652</h2></div><span className="chart-legend"><i /> Debit <i className="legend-blue" /> Totalizer</span></div>
-              <ReadingsChart readings={displayedReadings} />
-              <p className="chart-footnote">Grafik hanya memuat data yang tersedia. Satu titik tidak cukup untuk menghitung konsumsi.</p>
-            </article>
             <article className="panel latest-panel">
-              <div className="panel-heading"><div><p className="eyebrow">ANTARES LIVE</p><h2>Uplink terakhir · meter 26261652</h2></div>{liveStatus ? <span className={`status-pill status-${liveStatus}`}><span />{formatDeviceStatus(liveStatus)}</span> : <span className="partial-badge">Belum disinkronkan</span>}</div>
-              {liveReading ? (
+              <div className="panel-heading"><div><p className="eyebrow">STATUS KOMUNIKASI · HISTORI TERSIMPAN</p><h2>Uplink terakhir · meter {selectedSerial}</h2></div><span className={`status-pill status-${selectedMeter?.status ?? "no-data"}`}><span />{formatDeviceStatus(selectedMeter?.status ?? "no-data")}</span></div>
+              {selectedMeter?.latest ? (
                 <div className="diagnostic-content">
-                  <div className="diagnostic-time"><Clock3 size={15} />{formatDateTime(liveReading.radioGpsTime ?? liveReading.receivedAt)}</div>
+                  <div className="diagnostic-time"><Clock3 size={15} />Last Uplink · {formatDateTime(selectedMeter.latest.receivedAt)} WIB · decoder {selectedMeter.latest.decodeStatus}</div>
                   <div className="diagnostic-grid">
-                    <Metric label="DevEUI" value={liveReading.devEui} />
-                    <Metric label="Timestamp uplink" value={formatDateTime(liveReading.receivedAt)} />
-                    <Metric label="RSSI" value={`${formatNumber(liveReading.rssi, 0)} dBm`} />
-                    <Metric label="SNR" value={`${formatNumber(liveReading.snr)} dB`} />
+                    <Metric label="DevEUI" value={selectedMeter.latest.devEui} />
+                    <Metric label="Timestamp uplink" value={formatDateTime(selectedMeter.latest.receivedAt)} />
+                    <Metric label="RSSI" value={`${formatNumber(selectedMeter.latest.rssi, 0)} dBm`} />
+                    <Metric label="SNR" value={`${formatNumber(selectedMeter.latest.snr)} dB`} />
                   </div>
                   <details className="raw-details">
-                    <summary>Payload raw ANTARES <span>Live response</span></summary>
-                    <code>{liveReading.payloadHex}</code>
+                    <summary>Payload raw ANTARES <span>Data tersimpan</span></summary>
+                    <code>{selectedMeter.latest.payloadHex}</code>
                   </details>
                 </div>
-              ) : <div className="empty-state">Tekan Sync Now untuk membaca latest langsung dari ANTARES. Data demo tidak digunakan pada panel live ini.</div>}
+              ) : <div className="empty-state">NO DATA · Belum ada uplink meter {selectedSerial} tersimpan di Supabase.</div>}
             </article>
           </section>
-          <div className="refresh-note"><Clock3 size={14} />Pembaruan tampilan otomatis setiap 60 detik · Terakhir dimuat {formatDateTime(lastRefresh)}</div>
+          <div className="refresh-note">
+            <Clock3 size={14} />Pembaruan otomatis setiap 60 detik · Last Updated {formatDateTime(lastUpdated)} WIB · Last Uplink {formatDateTime(selectedMeter?.lastSeen)} WIB
+          </div>
         </>
       )}
       <footer className="page-footer"><span>SIAB ULTRASONIC MONITORING <i>·</i> POC ANCOL 2026</span><span>Untuk pemantauan teknis, bukan penagihan resmi.</span></footer>
@@ -262,10 +220,32 @@ export function Dashboard() {
   );
 }
 
+function formatDeviceStatus(status: DeviceWithLatest["status"]): string {
+  return status === "fresh" ? "FRESH" : status === "stale" ? "STALE" : "NO DATA";
+}
+
+function formatMeasured(value: number | null | undefined, unit: string): string {
+  return value === null || value === undefined ? "—" : `${formatNumber(value)} ${unit}`;
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function formatDeviceStatus(status: DeviceWithLatest["status"]): string {
-  return status === "fresh" ? "FRESH" : status === "stale" ? "STALE" : "NO DATA";
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, { cache: "no-store" });
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = body && typeof body === "object" && "error" in body && typeof body.error === "string"
+      ? body.error
+      : `Backend SIAB gagal memuat data (HTTP ${response.status}).`;
+    throw new Error(message);
+  }
+  return body as T;
+}
+
+function formatPeriod(period: TelemetryPeriod): string {
+  if (period === "7d") return "7 hari";
+  if (period === "30d") return "30 hari";
+  return `${period.replace("h", "")} jam`;
 }

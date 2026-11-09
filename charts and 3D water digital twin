@@ -1,0 +1,27 @@
+.env.example
+docs/ANTARES_SETUP.md
+docs/DEPLOYMENT.md
+package-lock.json
+package.json
+src/app/api/readings/route.ts
+src/app/api/sync/route.ts
+src/app/devices/[serial]/page.tsx
+src/app/globals.css
+src/components/charts/DeviceDetailCharts.tsx
+src/components/charts/MonitoringCharts.tsx
+src/components/dashboard/Dashboard.tsx
+src/components/digital-twin/DeviceTwin.tsx
+src/components/digital-twin/WaterMeterTwin.tsx
+src/lib/antares/http.ts
+src/lib/api.ts
+src/lib/db/repository.ts
+src/lib/telemetry/chart-data.ts
+src/lib/telemetry/status.ts
+tatus --short
+tests/antares-http.test.ts
+tests/api-auth.test.ts
+tests/chart-data.test.ts
+tests/readings-route.test.ts
+tests/status.test.ts
+tests/sync-route.test.ts
+vercel.json

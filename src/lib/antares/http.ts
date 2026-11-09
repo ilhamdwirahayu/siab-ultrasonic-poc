@@ -1,4 +1,5 @@
 const timeoutMs = 8_000;
+const retryDelaysMs = [250, 750];
 
 export type AntaresFailureType =
   | "missing-credentials"
@@ -53,30 +54,46 @@ export async function fetchAntaresJson(
   requestName: string,
   fetcher: typeof fetch = fetch,
 ): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetcher(url, {
-      headers: {
-        "X-M2M-Origin": accessKey,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-      cache: "no-store",
-    });
-  } catch (error) {
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    const message = timedOut
-      ? `Request timed out after ${timeoutMs} ms.`
-      : sanitizeAntaresError(error instanceof Error ? error.message : "Network request failed.", accessKey);
-    console.error("ANTARES request failed", { requestName, message });
-    throw new AntaresHttpError(
-      `ANTARES ${requestName} request failed: ${message}`,
-      timedOut ? "timeout" : "network-error",
-      null,
-    );
+  let response: Response | undefined;
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      response = await fetcher(url, {
+        headers: {
+          "X-M2M-Origin": accessKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+        cache: "no-store",
+      });
+    } catch (error) {
+      const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      if (attempt < retryDelaysMs.length) {
+        await delay(retryDelaysMs[attempt]);
+        continue;
+      }
+      const message = timedOut
+        ? `Request timed out after ${timeoutMs} ms.`
+        : sanitizeAntaresError(error instanceof Error ? error.message : "Network request failed.", accessKey);
+      console.error("ANTARES request failed", {
+        requestName,
+        failureType: timedOut ? "timeout" : "network-error",
+        message,
+      });
+      throw new AntaresHttpError(
+        `ANTARES ${requestName} request failed: ${message}`,
+        timedOut ? "timeout" : "network-error",
+        null,
+      );
+    }
+
+    if (response.ok || !isRetryableStatus(response.status) || attempt === retryDelaysMs.length) break;
+    await response.body?.cancel();
+    response = undefined;
+    await delay(retryDelaysMs[attempt]);
   }
 
+  if (!response) throw new AntaresHttpError("ANTARES request failed without a response.", "unknown", null);
   const responseText = await response.text();
   if (!response.ok) {
     const message = sanitizeAntaresError(extractErrorMessage(responseText), accessKey);
@@ -86,6 +103,14 @@ export async function fetchAntaresJson(
       getHttpFailureType(response.status),
       response.status,
     );
+  }
+
+  function isRetryableStatus(status: number): boolean {
+    return status === 429 || status >= 500;
+  }
+
+  function delay(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
   try {

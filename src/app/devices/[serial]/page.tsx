@@ -1,12 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Radio, Waves } from "lucide-react";
-import { ReadingsChart } from "@/components/charts/ReadingsChart";
+import { DeviceDetailCharts } from "@/components/charts/DeviceDetailCharts";
 import { DeviceTwin } from "@/components/digital-twin/DeviceTwin";
 import { DEVICES } from "@/config/devices";
 import { listDevices } from "@/lib/db/repository";
 import { formatDateTime, formatNumber } from "@/lib/format";
-import { listReadings } from "@/lib/db/repository";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +15,6 @@ export default async function DevicePage({ params }: { params: Promise<{ serial:
   if (!metadata) notFound();
   const device = (await listDevices()).find((item) => item.serial === serial);
   if (!device) notFound();
-  const readings = await listReadings(serial, 100);
   const latest = device.latest;
 
   return (
@@ -48,14 +46,11 @@ export default async function DevicePage({ params }: { params: Promise<{ serial:
         </article>
         <article className="panel detail-twin">
           <div className="panel-heading"><div><p className="eyebrow">DIGITAL TWIN</p><h2>Ilustrasi meter</h2></div></div>
-          <DeviceTwin flow={latest?.flowM3PerHour ?? null} />
+          <DeviceTwin device={device} refreshDevice />
         </article>
       </section>
+      <DeviceDetailCharts serial={serial} />
       <section className="bottom-grid detail-bottom">
-        <article className="panel chart-panel">
-          <div className="panel-heading"><div><p className="eyebrow">HISTORI</p><h2>Pembacaan meter</h2></div></div>
-          <ReadingsChart readings={readings} />
-        </article>
         <article className="panel latest-panel">
           <div className="panel-heading"><div><p className="eyebrow">LORAWAN DIAGNOSTICS</p><h2><Radio size={18} />Informasi uplink</h2></div></div>
           {latest ? (
